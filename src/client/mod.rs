@@ -21,8 +21,9 @@
 //! # Connection state
 //!
 //! An error that leaves the connection in an unknown state — any TCP or
-//! ISO error ([`S7Error::is_link`]), or a reply that does not answer the
-//! request (wrong PDU reference) — closes the connection; the next call
+//! ISO error ([`S7Error::is_link`]), a reply that is not a valid S7 PDU,
+//! a Read / Write Var answer that cannot be decoded, or a reply that does
+//! not answer the request (wrong PDU reference) — closes the connection; the next call
 //! returns [`ErrorKind::TcpNotConnected`] until [`connect`](S7Client::connect)
 //! (or another `connect_*`) opens it again. A refusal the PLC sends
 //! ([`S7Error::is_cpu`]) keeps it.
@@ -332,10 +333,13 @@ impl S7Client {
                 }
                 let setup = Setup::decode(&reply.param)
                     .map_err(|e| S7Error::new(ErrorKind::NegotiatingPdu).detailed(e.to_string()))?;
-                if setup.pdu_length == 0 {
+                if setup.pdu_length == 0 || setup.max_amq_calling == 0 {
                     return Err(S7Error::with_detail(
                         ErrorKind::NegotiatingPdu,
-                        "the PLC negotiated a PDU of 0 octets",
+                        format!(
+                            "the PLC negotiated a {}-octet PDU and {} parallel jobs",
+                            setup.pdu_length, setup.max_amq_calling
+                        ),
                     ));
                 }
                 // Never more than was proposed, whatever the PLC says.
@@ -410,8 +414,15 @@ impl S7Client {
     /// Receives one PDU by `deadline`.
     pub(crate) fn receive_pdu(&mut self, deadline: Instant) -> Result<Pdu, S7Error> {
         let link = self.link.as_mut().ok_or(ErrorKind::TcpNotConnected)?;
-        let result = link.receive(deadline).and_then(|bytes| Pdu::decode(&bytes));
-        result.map_err(|e| self.fail(e))
+        let bytes = link.receive(deadline).map_err(|e| self.fail(e))?;
+        Pdu::decode(&bytes).map_err(|e| self.broken(e))
+    }
+
+    /// Drops the connection after a reply that could not be read: the
+    /// PLC's state is unknown.
+    pub(crate) fn broken(&mut self, error: S7Error) -> S7Error {
+        self.disconnect();
+        error
     }
 
     /// Sends `request` and returns the PLC's reply to it, checking the

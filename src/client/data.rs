@@ -163,16 +163,17 @@ impl S7Client {
         if reply.error != 0 {
             return Err(S7Error::from_cpu(reply.error));
         }
-        match proto::decode_read_var_response(&reply, 1)?.remove(0) {
+        let decoded = proto::decode_read_var_response(&reply, 1).map_err(|e| self.broken(e))?;
+        match decoded.into_iter().next().expect("one item decoded") {
             ItemResult::Data(bytes) if bytes.len() == spec.byte_len() => Ok(bytes),
-            ItemResult::Data(bytes) => Err(S7Error::with_detail(
+            ItemResult::Data(bytes) => Err(self.broken(S7Error::with_detail(
                 ErrorKind::InvalidDataSizeReceived,
                 format!(
                     "asked for {} bytes, received {}",
                     spec.byte_len(),
                     bytes.len()
                 ),
-            )),
+            ))),
             ItemResult::Error(code) => Err(S7Error::from_cpu(u16::from(code))),
         }
     }
@@ -238,7 +239,8 @@ impl S7Client {
         if reply.error != 0 {
             return Err(S7Error::from_cpu(reply.error));
         }
-        match proto::decode_write_var_response(&reply, 1)?[0] {
+        let codes = proto::decode_write_var_response(&reply, 1).map_err(|e| self.broken(e))?;
+        match codes[0] {
             proto::item::SUCCESS => Ok(()),
             code => Err(S7Error::from_cpu(u16::from(code))),
         }
@@ -444,18 +446,19 @@ impl S7Client {
             }
             return Ok(());
         }
-        let results = proto::decode_read_var_response(&reply, specs.len())?;
+        let results =
+            proto::decode_read_var_response(&reply, specs.len()).map_err(|e| self.broken(e))?;
         for (&(index, len), result) in job.iter().zip(&results) {
             if let ItemResult::Data(bytes) = result {
                 if bytes.len() != len {
-                    return Err(S7Error::with_detail(
+                    return Err(self.broken(S7Error::with_detail(
                         ErrorKind::InvalidDataSizeReceived,
                         format!(
                             "item {} asked for {len} bytes, received {}",
                             index + 1,
                             bytes.len()
                         ),
-                    ));
+                    )));
                 }
             }
         }
@@ -545,7 +548,8 @@ impl S7Client {
             }
             return Ok(());
         }
-        let codes = proto::decode_write_var_response(&reply, job.len())?;
+        let codes =
+            proto::decode_write_var_response(&reply, job.len()).map_err(|e| self.broken(e))?;
         for (&(index, _), code) in job.iter().zip(codes) {
             items[index].result = match code {
                 proto::item::SUCCESS => Ok(()),

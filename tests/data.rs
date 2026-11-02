@@ -428,3 +428,38 @@ fn error_codes_and_texts_follow_snap7() {
     let error = S7Error::from_cpu(0x8104);
     assert!(error.to_string().contains("PLC code 0x8104"));
 }
+
+#[test]
+fn a_plc_granting_no_parallel_job_is_refused() {
+    let (server, _) = plc(Options {
+        jobs: 0,
+        ..Options::default()
+    });
+    let mut client = S7Client::new();
+    client.set_connection_port(server.address.port()).unwrap();
+    let error = client.connect_rack_slot("127.0.0.1", 0, 1).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::NegotiatingPdu);
+    assert!(!client.connected);
+}
+
+#[test]
+fn a_malformed_answer_closes_the_connection() {
+    // A write acknowledged with an extra octet after the item codes.
+    let server = Plc::start(Options::default(), |session, pdu| {
+        session.ack(&pdu, vec![0x05, 1], vec![0xFF, 0x05])
+    });
+    let mut client = server.client();
+    let error = client.write_db(1, 0, &[1]).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidPlcAnswer);
+    assert!(!client.connected);
+}
+
+#[test]
+fn a_zero_cotp_length_indicator_is_an_error() {
+    assert_eq!(
+        rust7::iso::Tpdu::decode(&[0x00, 0xF0, 0x80])
+            .unwrap_err()
+            .kind(),
+        ErrorKind::IsoInvalidPdu
+    );
+}

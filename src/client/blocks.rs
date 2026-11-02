@@ -226,10 +226,20 @@ impl S7Client {
             ));
         }
         let id = be32(&reply.param, 4);
-        let result = self.upload_parts(id);
+        // The block's total length, as ASCII digits after a length octet.
+        let announced = reply.param.get(8).and_then(|&n| {
+            let digits = reply.param.get(9..9 + usize::from(n))?;
+            std::str::from_utf8(digits)
+                .ok()?
+                .trim()
+                .parse::<usize>()
+                .ok()
+        });
+        let result = self.upload_parts(id, announced);
         if !matches!(&result, Err(e) if e.is_link()) {
             let end = self.job(upload_param(function::END_UPLOAD, id), Vec::new());
-            if let (Ok(reply), Ok(_)) = (&end, &result) {
+            if result.is_ok() {
+                let reply = end?;
                 if reply.error != 0 {
                     return Err(S7Error::cpu(ErrorKind::UploadSequenceFailed, reply.error));
                 }
@@ -240,7 +250,9 @@ impl S7Client {
         Ok(block)
     }
 
-    fn upload_parts(&mut self, id: u32) -> Result<Vec<u8>, S7Error> {
+    /// Collects the upload's parts; with the length Start upload
+    /// announced, more or fewer octets than announced fail.
+    fn upload_parts(&mut self, id: u32, announced: Option<usize>) -> Result<Vec<u8>, S7Error> {
         let mut block = Vec::new();
         for _ in 0..MAX_UPLOAD_PARTS {
             let reply = self.job(upload_param(function::UPLOAD, id), Vec::new())?;
@@ -265,8 +277,23 @@ impl S7Client {
                 )
             })?;
             block.extend_from_slice(part);
-            if !more {
-                return Ok(block);
+            let size_error = || {
+                S7Error::with_detail(
+                    ErrorKind::InvalidDataSizeReceived,
+                    format!(
+                        "the PLC announced a {} octet block and sent {}{}",
+                        announced.unwrap_or_default(),
+                        block.len(),
+                        if more { " so far" } else { "" }
+                    ),
+                )
+            };
+            match announced {
+                Some(total) if block.len() > total || (!more && block.len() != total) => {
+                    return Err(size_error());
+                }
+                _ if !more => return Ok(block),
+                _ => {}
             }
         }
         Err(answer("an upload that never ends"))
@@ -361,6 +388,16 @@ impl S7Client {
                 }
                 Some(function::DOWNLOAD_ENDED) => {
                     self.answer_plc(&job, vec![function::DOWNLOAD_ENDED], Vec::new())?;
+                    // Download ended carries the PLC's error code after its
+                    // status octet.
+                    let error = if job.param.len() >= 4 {
+                        be16(&job.param, 2)
+                    } else {
+                        0
+                    };
+                    if error != 0 {
+                        return Err(S7Error::cpu(ErrorKind::DownloadSequenceFailed, error));
+                    }
                     if sent < block.len() {
                         return Err(S7Error::with_detail(
                             ErrorKind::DownloadSequenceFailed,

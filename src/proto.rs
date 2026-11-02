@@ -544,6 +544,12 @@ pub fn decode_data_items(data: &[u8], count: usize) -> Result<Vec<(u8, Vec<u8>)>
             at += 1;
         }
     }
+    if at < data.len() {
+        return Err(answer(format!(
+            "{} octets follow the last of {count} data items",
+            data.len() - at
+        )));
+    }
     Ok(items)
 }
 
@@ -575,7 +581,7 @@ pub fn write_var_request(items: &[(ItemSpec, &[u8])]) -> (Vec<u8>, Vec<u8>) {
 }
 
 fn item_count(param: &[u8], function: u8, what: &str) -> Result<usize, S7Error> {
-    if param.len() < 2 || param[0] != function {
+    if param.len() != 2 || param[0] != function {
         return Err(answer(format!(
             "a {what} response's parameter is {function:02x} plus an item count, found {}",
             hex(param)
@@ -605,13 +611,13 @@ pub fn decode_read_var_response(pdu: &Pdu, expected: usize) -> Result<Vec<ItemRe
 /// item's return code.
 pub fn decode_write_var_response(pdu: &Pdu, expected: usize) -> Result<Vec<u8>, S7Error> {
     let count = item_count(&pdu.param, function::WRITE_VAR, "Write Var")?;
-    if count != expected || pdu.data.len() < count {
+    if count != expected || pdu.data.len() != count {
         return Err(answer(format!(
             "the Write Var response answers {count} items in {} octets; the request wrote {expected}",
             pdu.data.len()
         )));
     }
-    Ok(pdu.data[..count].to_vec())
+    Ok(pdu.data.clone())
 }
 
 /// The bytes a Read Var request of `items` items occupies.

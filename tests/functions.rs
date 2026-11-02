@@ -395,7 +395,7 @@ fn downloads_a_block_as_the_plc_asks_for_it() {
             0x1A => {
                 session.ack(&pdu, vec![0x1A], Vec::new())?;
                 let name = pdu.param[9..18].to_vec();
-                let mut job = vec![0x1B, 0, 1, 0, 0, 0, 0, 0, 9];
+                let mut job = vec![0x1B, 0, 0, 0, 0, 0, 0, 0, 9];
                 job.extend_from_slice(&name);
                 for reference in 0x100.. {
                     session.send(&Pdu::request(
@@ -583,4 +583,50 @@ fn sends_and_clears_the_session_password() {
         client.set_session_password("x").unwrap_err().kind(),
         ErrorKind::InvalidPassword
     );
+}
+
+#[test]
+fn a_download_the_plc_ends_with_an_error_fails() {
+    let image = block(0x0A, 3, &[1, 2, 3, 4]);
+    let server = Plc::start(Options::default(), move |session, pdu| match pdu.param[0] {
+        0x1A => {
+            session.ack(&pdu, vec![0x1A], Vec::new())?;
+            let mut job = vec![0x1B, 0, 0, 0, 0, 0, 0, 0, 9];
+            job.extend_from_slice(&pdu.param[9..18]);
+            session.send(&Pdu::request(Rosctr::Job, 0x100, job.clone(), Vec::new()))?;
+            session.recv()?;
+            // Download ended with error code 0x8003.
+            job[0] = 0x1C;
+            job[2] = 0x80;
+            job[3] = 0x03;
+            session.send(&Pdu::request(Rosctr::Job, 0x101, job, Vec::new()))?;
+            session.recv()?;
+            Ok(())
+        }
+        _ => session.ack(&pdu, vec![pdu.param[0]], Vec::new()),
+    });
+    let mut client = server.client();
+    let error = client.download(None, &image).unwrap_err();
+    assert_eq!(
+        (error.kind(), error.cpu_code()),
+        (ErrorKind::DownloadSequenceFailed, Some(0x8003))
+    );
+    // No insert was attempted.
+    assert!(server.requests().iter().all(|r| r.param[0] != 0x28));
+}
+
+#[test]
+fn an_upload_shorter_than_announced_fails() {
+    let server = Plc::start(Options::default(), |session, pdu| match pdu.param[0] {
+        0x1D => session.ack(
+            &pdu,
+            hex("1d 00 01 00 00 00 00 07 07 30 30 30 30 33 37 32"),
+            Vec::new(),
+        ),
+        0x1E => session.ack(&pdu, vec![0x1E, 0], hex("00 02 00 fb 01 02")),
+        _ => session.ack(&pdu, vec![pdu.param[0]], Vec::new()),
+    });
+    let mut client = server.client();
+    let error = client.full_upload(BLOCK_DB, 1).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidDataSizeReceived);
 }

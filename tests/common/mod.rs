@@ -26,6 +26,8 @@ pub struct Options {
     pub tpdu_code: u8,
     /// Refuse the ISO connection with this DR reason.
     pub refuse: Option<u8>,
+    /// The parallel jobs Setup Communication grants.
+    pub jobs: u16,
 }
 
 impl Default for Options {
@@ -34,6 +36,7 @@ impl Default for Options {
             pdu_limit: 480,
             tpdu_code: iso::TPDU_SIZE_1024,
             refuse: None,
+            jobs: 1,
         }
     }
 }
@@ -278,7 +281,7 @@ where
         if let Ok(Job::Setup(setup)) = Job::decode(&pdu) {
             session.pdu = setup.pdu_length.min(options.pdu_limit);
             let answer = Setup {
-                max_amq_calling: 1,
+                max_amq_calling: options.jobs,
                 max_amq_called: 1,
                 pdu_length: session.pdu,
             };

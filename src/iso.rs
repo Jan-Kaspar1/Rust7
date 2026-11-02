@@ -287,6 +287,11 @@ impl Tpdu {
             ));
         }
         let header_len = usize::from(bytes[0]) + 1;
+        if header_len < 2 {
+            return Err(invalid(
+                "a COTP length indicator of 0 leaves no room for the TPDU code",
+            ));
+        }
         if header_len > bytes.len() {
             return Err(invalid(format!(
                 "the COTP length indicator announces a {header_len}-octet header in a {}-octet TPDU",
