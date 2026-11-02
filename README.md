@@ -5,11 +5,16 @@ Pragmatic native Rust S7 client (Snap7‑style) for Siemens PLCs.
 ---
 
 ## Features
-- Pure Rust, no unsafe code.
+- Pure Rust, no unsafe code, no dependencies.
 - Low latency: ≈ 1ms/PDU.
 - Small footprint.
 - Strict control of incoming headers.
-- Automatic telegram splitting for large reads/writes.
+- Snap7's client function set: all areas and word lengths (DB, MK, PE, PA, TM, CT, bits),
+  multi-variable read/write, block list/info/upload/download/delete, SZL, order code,
+  CPU/CP info, PLC control (start/stop/copy RAM to ROM/compress), PLC status,
+  date/time, protection and session password.
+- Automatic telegram splitting for large reads/writes and multi-variable access.
+- Snap7's numeric error codes, with the PLC's own refusal code kept.
 - Connection helpers methods for S71200/1500 and S7300.
 ---
 

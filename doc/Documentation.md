@@ -76,417 +76,119 @@ while !exit_request{
 }
 ```
 
+
 # API
 ---
 
-#### Connection Setup
+The client implements Snap7's `TS7Client` function set. Every method returns
+`Result<_, S7Error>`; the rustdoc of each method (`cargo doc --open`) has the
+details. The asynchronous `As*` variants of Snap7 are not provided: the client is
+synchronous; run it on its own thread.
 
+#### Connection setup
 
-|Prototype|Behaviour|      
-|---|---|
-|`set_connection_type`|Changes the S7 connection type to the PLC       |
-|`set_timeout`        |Sets operations timeout                         |
-|`set_connection_port`|Sets the TCP Connection Port                    |
+|Prototype|Snap7|Behaviour|
+|---|---|---|
+|`set_connection_type(u16)`|`SetConnectionType`|`CT_PG` (default), `CT_OP` or `CT_S7`: the high byte of the remote TSAP|
+|`set_timeout(co, rd, wr)`|`SetParam` (timeouts)|TCP connect, reply, and send timeouts in ms (3000, 1000, 500)|
+|`set_connection_port(u16)`|`SetParam(RemotePort)`|TCP port (102)|
+|`set_pdu_request(u16)`|`SetParam(PDURequest)`|PDU size proposed when connecting, 240..=960 (480)|
+|`set_connection_params(addr, local_tsap, remote_tsap)`|`SetConnectionParams`|Address and TSAPs for `connect()`|
 
 #### Connection
-|Prototype|Behaviour|      
-|---|---|
-|`connect_s71200_1500`|Connects to the S71200 or S71500 families            |
-|`connect_s7300`      |Connects to S7300 family                             |
-|`connect_rack_slot`  |Connects to a Siemens PLC/Drive using Rack and Slot  |
-|`connect_tsap`       |Connects to a Siemens ISO-Hardware using TSAP records|
-|`disconnect`         |Closes the connection                                |
 
-#### Raw Read/Write methods
-|Prototype|Behaviour|      
-|---|---|
-|`read_area`     |Reads a block of data from a specific S7 memory area  |
-|`write_area`    |Writes a block of data to a specific S7 memory area   |
+|Prototype|Snap7|Behaviour|
+|---|---|---|
+|`connect_s71200_1500(ip)`|`ConnectTo(ip, 0, 0)`|Connects to an S7-1200/1500|
+|`connect_s7300(ip)`|`ConnectTo(ip, 0, 2)`|Connects to an S7-300|
+|`connect_rack_slot(ip, rack, slot)`|`ConnectTo`|Connects using rack and slot|
+|`connect_tsap(ip, local_tsap, remote_tsap)`|`SetConnectionParams` + `Connect`|Connects using TSAPs (LOGO!, S7-200)|
+|`connect()`|`Connect`|Connects (again) with the stored parameters|
+|`disconnect()`|`Disconnect`|Closes the connection|
 
-#### Simplified Read/Write methods
-|Prototype|Behaviour|      
-|---|---|
-|`read_db`       |Reads a block of byte from a specific Data Block (DB) |
-|`read_bit`      |Reads a bit from a specific S7 memory area            |
-|`write_db`      |Writes a block of byte to a specific Data Block (DB)  |
-|`write_bit`     |Writes a bit to a specific S7 memory area             |
+`ip` may be a host name, an IPv4 address, or an IPv6 address with or without
+brackets.
 
-## Connection setup methods
----
+#### Data I/O
 
-```rust
-pub fn set_connection_type(&mut self, connection_type: u16)
-```
-### Changes the S7 connection type to the PLC
+|Prototype|Snap7|Behaviour|
+|---|---|---|
+|`read_area(area, db, start: u32, word_len, &mut [u8])`|`ReadArea`|Reads any area with any word length; split by PDU|
+|`write_area(area, db, start: u32, word_len, &[u8])`|`WriteArea`|Writes any area with any word length; split by PDU|
+|`read_db` / `write_db`|`DBRead` / `DBWrite`|DB bytes|
+|`read_mb` / `write_mb`|`MBRead` / `MBWrite`|Merker bytes|
+|`read_eb` / `write_eb`|`EBRead` / `EBWrite`|Process-input bytes|
+|`read_ab` / `write_ab`|`ABRead` / `ABWrite`|Process-output bytes|
+|`read_tm` / `write_tm`|`TMRead` / `TMWrite`|Timers (2 bytes each)|
+|`read_ct` / `write_ct`|`CTRead` / `CTWrite`|Counters (2 bytes each)|
+|`read_bit` / `write_bit`|—|One bit|
+|`read_multi_vars(&mut [S7DataItem])`|`ReadMultiVars`|Several variables, packed into as few jobs as the PDU allows|
+|`write_multi_vars(&mut [S7DataItem])`|`WriteMultiVars`|Several variables, packed likewise|
 
-The three possible connection types are:
-- `CT_PG`: (as a programming device)
-- `CT_OP`: (as an HMI)
-- `CT_S7`: (as a generic device)
+Areas: `S7_AREA_PE` (inputs), `S7_AREA_PA` (outputs), `S7_AREA_MK` (merkers),
+`S7_AREA_DB`, `S7_AREA_CT` (counters), `S7_AREA_TM` (timers). Word lengths:
+`S7_WL_BIT`, `S7_WL_BYTE`, `S7_WL_CHAR`, `S7_WL_WORD`, `S7_WL_INT`, `S7_WL_DWORD`,
+`S7_WL_DINT`, `S7_WL_REAL`, `S7_WL_COUNTER`, `S7_WL_TIMER`. For bit access `start`
+is `byte * 8 + bit`; for counters and timers it is the element number; otherwise
+the byte offset.
 
-In practice, there aren't many differences; the CT_PG connection should ensure
-better system responsiveness, but in reality, I've never noticed any noticeable differences.
+Snap7 limits a multi-variable call to 20 items in one PDU. Rust7 packs the items
+into as many jobs as needed (at most 20 items each, request and response within
+the negotiated PDU); a job the PLC refuses as a whole gives its refusal to each of
+its items. Each `S7DataItem` carries its own `result`.
 
-`CT_PG` is used by default.
+#### Blocks
 
-With very old PLCs (early S7300 series) that have limited communication resources,
-the connection may be rejected if we have S7Manager with many online windows open at the same time.  
-In this case, use `CT_OP` or `CT_S7`. 
- 
-#### Parameters
-- `connection_type`: Connection type.
- 
-#### Returns
-`Ok(())` on success, or an `S7Error` on failure.
+|Prototype|Snap7|Behaviour|
+|---|---|---|
+|`list_blocks()`|`ListBlocks`|Block count per type|
+|`list_blocks_of_type(block_type)`|`ListBlocksOfType`|Numbers, flags and languages of one type|
+|`get_ag_block_info(block_type, number)`|`GetAgBlockInfo`|A block's properties, from the PLC|
+|`get_pg_block_info(&[u8])`|`GetPgBlockInfo`|A block's properties, from an uploaded block|
+|`full_upload(block_type, number)`|`FullUpload`|The whole block: header, body, footer|
+|`upload(block_type, number)`|`Upload`|The block's body|
+|`download(Option<number>, &[u8])`|`Download`|Downloads a whole block and activates it|
+|`delete(block_type, number)`|`Delete`|Deletes a block|
+|`db_get(db)`|`DBGet`|A whole DB|
+|`db_fill(db, value)`|`DBFill`|Fills a whole DB|
 
-#### Errors
-- `S7Error::InvalidFunParam`: Invalid parameter supplied to the function.
+Block types: `BLOCK_OB`, `BLOCK_DB`, `BLOCK_SDB`, `BLOCK_FC`, `BLOCK_SFC`,
+`BLOCK_FB`, `BLOCK_SFB`.
 
-#### Notes
-1. The client must not be connected (that is, call this method before connecting).
-2. This method is not useful if you use `connect_tsap()` because the connection_type is already contained in the REMOTE_TSAP record.
+#### System information and control
 
----
-
-```rust
-pub fn set_timeout(&mut self, co_timeout_ms: u64, rd_timeout_ms: u64, wr_timeout_ms: u64 )
-```
-### Sets operations timeout
-
-#### Parameters
-- `co_timeout_ms` : TCP Connection timeout (ms) (Default = 3000 ms)
-- `rd_timeout_ms` : Read Connection timeout (ms) (Default = 1000 ms)
-- `wr_timeout_ms` : Write Connection timeout (ms) (Default = 500 ms)
-
-#### Returns
-`Ok(())` on success, or an `S7Error` on failure.
-
-#### Errors
-- `S7Error::InvalidFunParam`: Invalid parameter supplied to the function.
-
-#### Notes
-1. Values must be > 0, otherwise they are ignored
-2. The client must not be connected (that is, call this method before connecting).
-
----
-```rust
-pub fn set_connection_port(&mut self, port: u16)
-```
-### Sets the TCP Connection Port
-The default S7 Port is 102, but if you need NAT the addresses you can use this method to change the default value.
-
-#### Parameters
-- `connection_type`: Connection type.
- 
-#### Returns
-`Ok(())` on success, or an `S7Error` on failure.
+|Prototype|Snap7|Behaviour|
+|---|---|---|
+|`read_szl(id, index)`|`ReadSZL`|A system status list, all parts|
+|`read_szl_list()`|`ReadSZLList`|The SZL IDs available|
+|`get_order_code()`|`GetOrderCode`|Order code and firmware version|
+|`get_cpu_info()`|`GetCpuInfo`|Module and system names, serial number, copyright|
+|`get_cp_info()`|`GetCpInfo`|PDU, connection and bus limits|
+|`get_protection()`|`GetProtection`|Protection settings (SZL 0x0232)|
+|`get_plc_status()`|`GetPlcStatus`|`CpuStatus::Run`, `Stop` or `Unknown`|
+|`plc_hot_start()`, `plc_cold_start()`, `plc_stop()`|`PlcHotStart`, `PlcColdStart`, `PlcStop`|Operating mode|
+|`copy_ram_to_rom(timeout_ms)`, `compress(timeout_ms)`|`CopyRamToRom`, `Compress`|Memory functions|
+|`get_plc_date_time()`, `set_plc_date_time(&S7DateTime)`, `set_plc_system_date_time()`|`GetPlcDateTime`, `SetPlcDateTime`, `SetPlcSystemDateTime`|The PLC clock (the system time is taken as UTC)|
+|`set_session_password(&str)`, `clear_session_password()`|`SetSessionPassword`, `ClearSessionPassword`|Session password|
+|`iso_exchange_buffer(&[u8])`|`IsoExchangeBuffer`|Sends a raw S7 PDU and returns the raw reply|
 
 #### Errors
-- `S7Error::InvalidFunParam`: Invalid parameter supplied to the function.
 
-### Notes
-1. Value must be > 0, otherwise it is ignored
-2. The client must not be connected (that is, call this method before connecting).
+`S7Error` carries an `ErrorKind` whose `code()` is Snap7's numeric error code
+(`errTCP*` in the low 16 bits, `errIso*` in bits 16–19, `errCli*` above), the code
+the PLC answered with when the PLC refused (`cpu_code()`: an item return code such
+as `0x0A`, or a header error such as `0x8104`), and a detail. `error_text(code)`
+gives Snap7's text for a numeric code.
 
----
-## Connection methods
----
+A TCP or ISO error (`is_link()`), or a reply that does not answer the request,
+closes the connection; reconnect with `connect()`. A refusal from the PLC
+(`is_cpu()`) keeps it.
 
-```rust
-pub fn connect_s71200_1500(&mut self, ip: &str) -> Result<(), S7Error>
-```
-### Connects to the S71200 or S71500 families   
+#### Low-level modules
 
-This helper method is same as `connect_rack_slot()` with rack=0 and slot=0
-### Parameters
-- `ip`  : PLC IPV4 address.
- 
-For Notes, Return and Errors look at `connect_tsap()`
+`rust7::iso` (TPKT / COTP) and `rust7::proto` (S7 PDUs, items, Read/Write Var in
+both directions, UserData framing) are public, so a test PLC can share the codec.
 
----
-```rust
-pub fn connect_s7300(&mut self, ip: &str) -> Result<(), S7Error>
-```
-### Connects to S7300 family
-
-This helper method is same as `connect_rack_slot()` with rack=0 and slot=2
-### Parameters
-- `ip`  : PLC IPV4 address.
- 
-For Notes, Return and Errors look at `connect_tsap()`
-
----
-```rust
-pub fn connect_rack_slot(&mut self, ip: &str, rack: u16, slot: u16) -> Result<()
-```
-### Connects to a Siemens PLC/Drive using Rack and Slot
-Rack and Slot are Hardware configuration parameters.
-
-For S7300 and S71200/1500 they are fixed, (see `connect_s7300()` and `connect_s71200_1500()` ).
- 
-Ultimately, you will need of this method only to connect to S7400, WinAC or other Siemens hardware, like Drives, in which Rack and Slot can vary.
- 
-### Parameters
-- `ip` : PLC IPV4 address.
-- `rack` : CPU/CU Rack.
-- `slot` : CPU/CU Slot.
-
-For Notes, Return and Errors look at `connect_tsap()`
-
----
-```rust
-pub fn connect_tsap(&mut self, ip: &str, local_tsap: u16, remote_tsap: u16) -> Result<(), S7Error>
-```
-### Connects to a Siemens ISO-Hardware using TSAP records
-
-This is the deepest connection method, you will need it only to connect to LOGO! or S7200.
-
-It's internally called by all other connection methods.
-#### Parameters
-- `ip` : PLC IPV4 address.
-- `local_tsap` : Client TSAP.
-- `remote_tsap` : Server TSAP (PLC).
- 
-#### Notes
-The connection port used is 102 (S7Protocol Port) unless you
-changed it via `set_connection_port()`
-
-#### Returns
-`Ok(())` on success, or an `S7Error` on failure.
-
-#### Errors
-- `S7Error::TcpConnectionFailed`: TCP connection could not be established.
-- `S7Error::IsoConnectionFailed`: ISO connection failed
-- `S7Error::PduNegotiationFailed`: PDU negotiation failed.
-- `S7Error::Io`: network I/O error.
-
-Example of using TSAPs (from Snap7 manual)
-![tsap](img/tsap.png)
-
----
-## Raw Read/Write methods
----
-
-```rust
-pub fn read_area(&mut self, area: u8, db_number: u16, start: u16, wordlen: u8, buffer: &mut [u8]) -> Result<(), S7Error>
-```
-### Reads a block of data from a specific S7 memory area.
-
-#### Parameters
-- `area`: S7 memory area constant (e.g., `S7_AREA_PE`, `S7_AREA_PA`, `S7_AREA_DB`, `S7_AREA_MK`).
-- `db_number`: DB number (ignored for non-DB areas).
-- `start`: Starting element index (byte index for bytes, bit index for bits).
-- `wordlen`: Word length constant (e.g., `S7_WL_BYTE`, `S7_WL_BIT`).
-- `buffer`: Destination buffer to store the read data.
-
-#### Values
-##### area
-- `S7_AREA_PE` (0x81): Process Inputs
-- `S7_AREA_PA` (0x82): Process Outputs
-- `S7_AREA_MK` (0x83): Merkers
-- `S7_AREA_DB` (0x84): Data Block
-##### wordlen 
-- `S7_WL_BIT` (0x01) : Bit access
-- `S7_WL_BYTE` (0x02): Byte access
-#### Bit access notes
-1. The start must be expressed in bits.
-For example, if you want to access bit `DBX 45.3`, the start value would be 45 * 8 + 3 = 363.
-2. Whatever buffer is passed, only the first byte will be used, which is considered true if !=0 or false if ==0
-
-#### Returns
-`Ok(())` Operation succeeded.
-
-#### Errors
-##### Low level
-- `S7Error::NotConnected`: An attempt was made to read while the client was not connected.
-- `S7Error::IsoInvalidHeader`: Invalid ISO Header
-- `S7Error::IsoInvalidTelegram`: Inconsistent expected telegram length.
-- `S7Error::IsoFragmentedPacket`: ISO Packet fragmented.
-- `S7Error::S7Unspecified`: Unknown S7 Error.
-- `S7Error::Io`: network I/O error.
-
-##### Suggestion
-In case of a low-level error, it is **highly recommended** to disconnect and reconnect the Client (as WinCC or other SCADA do)
-  
-##### High level
-- `S7Error::NotFound`: The resource was not found (e.g. Inexistent DB).
-- `S7Error::S7InvalidAddress`:
-1. Attempt to read beyond the limits.
-2. The DB is optimized.
-
-#### Notes
-- The number of bytes to read will be equal to the size of the buffer passed.
-- Large blocks are automatically split into chunks based on the negotiated PDU size.
-- In case of error the buffer contents will be inconsistent and should not be considered.
- 
----
-```rust
-pub fn write_area(&mut self, area: u8, db_number: u16, start: u16, wordlen: u8, data: &[u8]) -> Result<(), S7Error>
-```
- 
-### Writes a block of data to a specific S7 memory area.
-
-#### Parameters
- - `area`: S7 memory area constant (e.g., `S7_AREA_PE`, `S7_AREA_PA`, `S7_AREA_DB`, `S7_AREA_MK`).
- - `db_number`: DB number (ignored for non-DB areas).
- - `start`: Starting element index (byte index for bytes, bit index for bits).
- - `wordlen`: Word length constant (e.g., `S7_WL_BYTE`, `S7_WL_BIT`).
- - `buffer`: Source buffer to write.
-
-#### Values
-##### area
-- `S7_AREA_PE` (0x81): Process Inputs
-- `S7_AREA_PA` (0x82): Process Outputs
-- `S7_AREA_MK` (0x83): Merkers
-- `S7_AREA_DB` (0x84): Data Block
-##### wordlen 
-- `S7_WL_BIT` (0x01) : Bit access
-- `S7_WL_BYTE` (0x02): Byte access
-##### Bit access notes
-1. The start must be expressed in bits.
-For example, if you want to access bit `DBX 45.3`, the start value would be 45 * 8 + 3 = 363.
-2. Whatever buffer is passed, only the first byte will be used, which is considered true if !=0 or false if ==0
-3. Writing a bit affects **only that bit**, leaving adjacent bits in the byte unchanged. 
-
-#### Returns
-`Ok(())` Operation succeeded.
-
-#### Errors
-##### Low level
-- `S7Error::NotConnected`: An attempt was made to write while the client was not connected.
-- `S7Error::IsoInvalidHeader`: Invalid ISO Header
-- `S7Error::IsoInvalidTelegram`: Inconsistent expected telegram length.
-- `S7Error::IsoFragmentedPacket`: ISO Packet fragmented.
-- `S7Error::S7Unspecified`: Unknown S7 Error.
-- `S7Error::Io`: network I/O error.
-
-##### Suggestion
-In case of a low-level error, it is **highly recommended** to disconnect and reconnect the Client (as WinCC or other SCADA do)
-
-##### High level
-- `S7Error::NotFound`: The resource was not found (e.g. Inexistent DB).
-- `S7Error::S7InvalidAddress`:
-1. Attempt to write beyond the limits.
-2. The DB is optimized.
-
-#### Notes
-- The number of bytes to write will be equal to the size of the buffer passed.
-- Large blocks are automatically split into chunks based on the negotiated PDU size.
-- Writing the output buffer (`S7_AREA_PA`) usually does not produce useful results, in fact the output process image will be rewritten by OB1 in the next round
-
----
-## Simplified Read/Write methods
----
-
-```rust
-pub fn read_db(&mut self, db_number: u16, start: u16, buffer: &mut [u8]) -> Result<(), S7Error>
-```
-#### Reads a block of byte from a specific Data Block (DB)
-
-This helper method is same as `read_area()` with:
-- area = `S7_AREA_DB`
-- wordlen = `S7_WL_BYTE`
-
-#### Parameters
-- `db_number`: DB number 
-- `start`: Starting byte index 
-- `buffer`: Destination buffer to store the read data.
-
-#### Notes
-- The number of bytes to read will be equal to the size of the buffer passed.
- 
-For further info, please refer to `read_area()`
-
----
-```rust
-pub fn write_db(&mut self, db_number: u16, start: u16, buffer: &[u8]) -> Result<(), S7Error>
-```
-#### Writes a block of byte to a specific Data Block (DB)
-
-This helper method is same as `write_area()` with:
-- area = `S7_AREA_DB`
-- wordlen = `S7_WL_BYTE`
-
-#### Parameters
-- `db_number`: DB number 
-- `start`: Starting byte index 
-- `buffer`: Source buffer to write.
-
-#### Notes
-- The number of bytes to write will be equal to the size of the buffer passed.
- 
-For further info, please refer to `write_area()`
-
----
-```rust
-pub fn read_bit(&mut self, area: u8, db_number: u16, byte_num: u16, bit_idx: u8) -> Result<bool, S7Error>
-```
- #### Reads a bit from a specific S7 memory area
-
- This helper method is same as `read_area()` with:
- - wordlen = `S7_WL_BIT`
- - start = `byte_num * 8 + bit_idx`
- 
- #### Parameters
- - `area`: S7 memory area constant (e.g., `S7_AREA_PE`, `S7_AREA_PA`, `S7_AREA_DB`, `S7_AREA_MK`).
- - `db_number`: DB number (ignored for non-DB areas).
- - `byte_num`: Byte Number. 
- - `bit_idx`: Bit index inside the byte (0..7).
- 
- #### Example
- To read DB10.DBX71.4 use:
- 
- ```my_bit = read_bit(S7_AREA_DB, 10, 71, 4);```
- 
- #### Returns
- `Ok(<bool>)` or `Err(<S7Error>)`
-
-#### Errors
-- `S7Error::InvalidFunParam`: Invalid parameter supplied to the function.
-- Other reported by read_area()
-
- #### Suggestion
- - Even reading a single bit requires an entire telegram.
- Since reading is non-invasive, if you need to read multiple bits 
- (more or less adjacent in the same area), I recommend reading blocks 
- of bytes and then unpacking them.
- 
- For further info, please refer to `read_area()`
-
----
-```rust
-pub fn write_bit(&mut self, area: u8, db_number: u16, byte_num: u16, bit_idx: u8, value: bool) -> Result<(), S7Error>
-```
-#### Writes a bit to a specific S7 memory area
-
-This helper method is same as `write_area()` with:
-- wordlen = `S7_WL_BIT`
-- start = `byte_num * 8 + bit_idx`
-
-#### Parameters
-- `area`: S7 memory area constant (e.g., `S7_AREA_PE`, `S7_AREA_PA`, `S7_AREA_DB`, `S7_AREA_MK`).
-- `db_number`: DB number (ignored for non-DB areas).
-- `byte_num`: Byte Number. 
-- `bit_idx`: Bit index inside the byte (0..7).
-- `value`: Value to write (true | false).
-
-#### Example
-To write **1** into DB10.DBX71.4 use:
-
-```write_bit(S7_AREA_DB, 10, 71, 4, true);```
-
-#### Returns
-`Ok(())` Operation succeeded.
-
-#### Errors
-- `S7Error::InvalidFunParam`: Invalid parameter supplied to the function.
-- Other reported by write_area()
-
-#### Notes
-- Writing a bit affects only that bit, leaving adjacent bits in the byte unchanged. 
-
-For further info, please refer to `write_area()`
- 
 # Fields
 ---
 
@@ -495,7 +197,14 @@ pub connected: bool
 ```
 #### The Client is connected to the PLC
 #### Note
-- This is just a memory bit and doesn't reflect the actual state of the connection. For example, if you unplug the network cable, the underlying socket won't notice anything until the next read or write operation.
+- This reflects the last operation: if the network cable is unplugged, the socket
+  notices only at the next read or write, which then closes the connection.
+
+---
+```rust
+pub pdu_length: u16
+```
+#### The PDU size negotiated (0 while disconnected)
 
 ---
 ```rust
@@ -509,7 +218,6 @@ pub last_time: f64
 ```rust
 pub chunks:  usize
 ```
-#### Indicates how many pieces the data to be read or written in the last operation was divided into
-Maybe you need to know it only for extreme tuning
+#### How many jobs the last read or write took
 #### Note
 - If an error occurred the value will be 0
