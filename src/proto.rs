@@ -306,8 +306,8 @@ impl Pdu {
         out
     }
 
-    /// Reads one PDU — the payload of a TSDU. Octets beyond the lengths
-    /// the header announces are ignored.
+    /// Reads one PDU — the payload of a TSDU, whose length must be
+    /// exactly what the header announces.
     pub fn decode(bytes: &[u8]) -> Result<Self, S7Error> {
         if bytes.len() < JOB_HEADER_LEN {
             return Err(S7Error::with_detail(
@@ -338,7 +338,7 @@ impl Pdu {
         }
         let param_len = usize::from(be16(bytes, 6));
         let data_len = usize::from(be16(bytes, 8));
-        if bytes.len() < header_len + param_len + data_len {
+        if bytes.len() != header_len + param_len + data_len {
             return Err(S7Error::with_detail(
                 ErrorKind::IsoInvalidDataSize,
                 format!(

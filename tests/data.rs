@@ -463,3 +463,16 @@ fn a_zero_cotp_length_indicator_is_an_error() {
         ErrorKind::IsoInvalidPdu
     );
 }
+
+#[test]
+fn octets_beyond_the_announced_lengths_close_the_connection() {
+    let server = Plc::start(Options::default(), |session, pdu| {
+        let mut bytes = common::ack(&pdu, vec![0x05, 1], vec![0xFF]).encode();
+        bytes.push(0x00);
+        session.send_raw(&bytes)
+    });
+    let mut client = server.client();
+    let error = client.write_db(1, 0, &[1]).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::IsoInvalidDataSize);
+    assert!(!client.connected);
+}
